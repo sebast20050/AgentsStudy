@@ -11,6 +11,7 @@
             --chat-bg: #0b141a;
             --msg-in: #202c33;
             --msg-out: #005c4b;
+            --msg-manual: #8f1e1e; /* Rojo oscuro para mensajes manuales */
             --text-primary: #e9edef;
             --text-secondary: #8696a0;
             --accent: #00a884;
@@ -37,9 +38,13 @@
         #chat-messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 10px; background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-blend-mode: overlay; background-color: #0b141a; }
         
         .message { max-width: 70%; padding: 8px 12px; border-radius: 8px; font-size: 14px; line-height: 1.4; position: relative; }
+        
         .msg-user { align-self: flex-start; background-color: var(--msg-in); color: white; border-top-left-radius: 0; }
         .msg-agent { align-self: flex-end; background-color: var(--msg-out); color: white; border-top-right-radius: 0; }
-        .msg-manual { border: 2px solid var(--accent); } /* Highlight manual messages */
+        
+        /* ESTILO ROJO PARA MENSAJES MANUALES DEL HUMANO */
+        .msg-manual-human { align-self: flex-end; background-color: var(--msg-manual); color: white; border-top-right-radius: 0; border: 1px solid #ff6b6b; }
+        
         .msg-time { font-size: 10px; color: rgba(255,255,255,0.6); text-align: right; margin-top: 4px; }
 
         /* Footer Input */
@@ -50,21 +55,23 @@
         .btn:hover { opacity: 0.8; }
         .btn-send-stop { background-color: var(--danger); }
         .btn-restore { background-color: var(--accent); }
-        .btn:disabled { background-color: gray; cursor: not-allowed; }
 
         #empty-state { flex: 1; display: flex; justify-content: center; align-items: center; color: var(--text-secondary); font-size: 1.2rem; }
+        
+        /* Alertas */
+        .alert-error { position: absolute; top: 70px; left: 50%; transform: translateX(-50%); background-color: rgba(239, 83, 80, 0.9); padding: 10px 20px; border-radius: 20px; color: white; font-weight: bold; z-index: 100; animation: fadeOut 3s forwards; animation-delay: 2s; }
+        @keyframes fadeOut { to { opacity: 0; visibility: hidden; } }
     </style>
 </head>
 <body>
 
 <div id="sidebar">
     <div class="sidebar-header">Contactos</div>
-    <div id="contact-list">
-        </div>
+    <div id="contact-list"></div>
 </div>
 
 <div id="main">
-    <div id="chat-header" style="display:none;">
+    <div id="alert-container"></div> <div id="chat-header" style="display:none;">
         <div>
             <span id="current-phone-display" style="font-size: 1.1rem; font-weight: bold;"></span>
             <br>
@@ -73,8 +80,7 @@
         <button id="btn-restore-header" class="btn btn-restore" onclick="restoreAgent()">Restaurar Agente</button>
     </div>
 
-    <div id="chat-messages">
-        </div>
+    <div id="chat-messages"></div>
     <div id="empty-state">Selecciona un chat para comenzar</div>
 
     <div id="chat-footer" style="display:none;">
@@ -87,9 +93,8 @@
     let currentPhone = null;
     let refreshInterval = null;
 
-    // Cargar contactos al inicio
     fetchContacts();
-    setInterval(fetchContacts, 5000); // Refrescar lista de contactos cada 5 seg
+    setInterval(fetchContacts, 3000); 
 
     async function fetchContacts() {
         try {
@@ -101,7 +106,6 @@
 
     function renderContacts(contacts) {
         const list = document.getElementById('contact-list');
-        // Guardamos la selección actual para no perderla visualmente
         const currentSelection = currentPhone; 
         
         list.innerHTML = '';
@@ -130,12 +134,10 @@
         document.getElementById('current-phone-display').innerText = phone;
         updateHeaderStatus(status);
 
-        // Limpiar intervalo anterior si existe
         if (refreshInterval) clearInterval(refreshInterval);
         
         loadHistory();
-        // Polling cada 2 segundos para ver mensajes nuevos
-        refreshInterval = setInterval(loadHistory, 2000);
+        refreshInterval = setInterval(loadHistory, 1000); // Polling más rápido (1s) para sensación real-time
     }
 
     function updateHeaderStatus(status) {
@@ -164,30 +166,41 @@
 
     function renderHistory(history) {
         const chat = document.getElementById('chat-messages');
-        // Opción: Detectar si el usuario está haciendo scroll arriba para no moverlo
-        const shouldScroll = chat.scrollTop + chat.clientHeight === chat.scrollHeight;
+        const shouldScroll = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 50;
 
+        // Estrategia simple: Reemplazar todo. 
+        // Para producción masiva se recomienda usar keys y actualizar solo diferencias, pero aquí va bien.
         chat.innerHTML = '';
+        
         history.forEach(msg => {
             const div = document.createElement('div');
-            const isAgent = msg.sender === 'agent';
-            const isManual = msg.text.startsWith('[MANUAL]');
-            
-            div.className = `message ${isAgent ? 'msg-agent' : 'msg-user'} ${isManual ? 'msg-manual' : ''}`;
-            
-            // Limpiamos el texto [MANUAL] para visualización si se quiere, o lo dejamos
-            const textDisplay = msg.text.replace('nan', ''); 
-            if(!textDisplay) return;
+            let textContent = msg.text;
+            let messageClass = '';
 
+            if (msg.sender === 'user') {
+                messageClass = 'msg-user';
+            } else {
+                // Es agente
+                if (textContent.includes('[MANUAL]')) {
+                    messageClass = 'msg-manual-human'; // Clase ROJA
+                    textContent = textContent.replace('[MANUAL]', '').trim(); // Quitar etiqueta
+                } else {
+                    messageClass = 'msg-agent'; // Clase VERDE
+                }
+            }
+            
+            // Validar que no sea NaN o vacio visual
+            if(!textContent || textContent === 'nan') return;
+
+            div.className = `message ${messageClass}`;
             div.innerHTML = `
-                ${textDisplay}
-                <div class="msg-time">${msg.time}</div>
+                ${textContent}
+                <div class="msg-time">${msg.time.split(' ')[1] || ''}</div>
             `;
             chat.appendChild(div);
         });
 
-        // Scroll al fondo solo si estaba abajo o es la primera carga
-        chat.scrollTop = chat.scrollHeight;
+        if (shouldScroll) chat.scrollTop = chat.scrollHeight;
     }
 
     async function sendAndStop() {
@@ -195,7 +208,7 @@
         const message = txt.value.trim();
         if (!message) return;
 
-        txt.value = ''; // Limpiar input
+        txt.value = ''; 
         
         try {
             const res = await fetch('/api/send_manual', {
@@ -206,16 +219,16 @@
             const data = await res.json();
             if(data.status === 'success') {
                 updateHeaderStatus('PAUSED');
-                loadHistory(); // Recargar chat inmediatamente
-                fetchContacts(); // Actualizar puntito rojo en sidebar
+                loadHistory(); 
+                fetchContacts();
             } else {
-                alert('Error al enviar: ' + data.message);
+                showError('Error al enviar: ' + data.message);
             }
-        } catch (e) { alert('Error de red'); }
+        } catch (e) { showError('Error de red'); }
     }
 
     async function restoreAgent() {
-        if(!confirm("¿Seguro que deseas reactivar la IA para este usuario?")) return;
+        if(!confirm("¿Deseas reactivar la IA?")) return;
         
         try {
             const res = await fetch('/api/restore_agent', {
@@ -223,12 +236,27 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ phone: currentPhone })
             });
+            
+            // Manejo de códigos de estado HTTP
+            if (res.status === 400) {
+                 const data = await res.json();
+                 showError(data.message); // Mostrar "debe dar una respuesta previa"
+                 return;
+            }
+
             const data = await res.json();
             if(data.status === 'success' || data.status === 'no_change') {
                 updateHeaderStatus('ACTIVE');
                 fetchContacts();
             }
-        } catch (e) { alert('Error de red'); }
+        } catch (e) { showError('Error de red al restaurar'); }
+    }
+
+    function showError(msg) {
+        const container = document.getElementById('alert-container');
+        container.innerHTML = `<div class="alert-error">${msg}</div>`;
+        // El CSS animation se encarga de desaparecerlo
+        setTimeout(() => { container.innerHTML = ''; }, 6000);
     }
 </script>
 

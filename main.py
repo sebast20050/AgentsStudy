@@ -21,7 +21,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 app = FastAPI(title="WhatsApp XLSX Agent Gemini GenAI + Human Interface")
 
-# --- Configuración CORS y Templates ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,7 +29,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuración de templates para servir el frontend
 templates = Jinja2Templates(directory="templates")
 
 # ============================================================
@@ -44,7 +42,6 @@ def create_agent_with_csv_genai(data_path: str, model_name: str, api_key: str):
             return None
 
         df = pd.read_csv(data_path)
-        # Muestreo de hasta 1000 filas
         n_samples = min(1000, len(df))
         df_sampled = df.sample(n=n_samples, random_state=42)
         data = df_sampled.to_markdown(index=False)
@@ -79,66 +76,55 @@ def create_agent_with_csv_genai(data_path: str, model_name: str, api_key: str):
 
 
 def process_message_with_agent(agent_data: dict, from_wa: str, body: str):
-    # CORRECCIÓN: Verificar si el agente existe antes de intentar usarlo
     if agent_data is None:
-        logging.error("[AGENTE ERROR] El agente no está inicializado (agent_data is None). Revisa logs de inicio.")
-        # Opcional: Avisar al usuario que hay un error técnico
-        # numero_ok = rag.normalizar_numero(from_wa)
-        # rag.send_whatsapp_text(app.state.WHATSAPP_TOKEN, app.state.WHATSAPP_PHONE_NUMBER_ID, numero_ok, "⚠️ Error técnico: El agente no está disponible.")
-        return {"status": "error", "message": "Agente no inicializado"}
+        logging.error("[AGENTE ERROR] El agente no está inicializado.")
+        return
 
     try:
         client = agent_data.get("client")
         model_name = agent_data.get("model")
         contexto = agent_data.get("context")
 
-        if not client:
-             logging.error("[AGENTE ERROR] Cliente de Gemini no encontrado en agent_data.")
-             return
+        if not client: return
 
         numero_ok = rag.normalizar_numero(from_wa)
         
-        # VALIDACIÓN DOBLE: Si por alguna razón entró aquí y está pausado, abortar.
+        # Validar pausa una vez más por si acaso
         if hasattr(app.state, 'PAUSED_USERS') and numero_ok in app.state.PAUSED_USERS:
-            logging.info(f"[AGENTE OMITIDO] El usuario {numero_ok} está pausado. No se responde.")
             return
 
         pregunta = body.strip()
-        logging.info(f"[AGENTE] Pregunta de {numero_ok}: {pregunta}")
-
-        # Construir el prompt final
+        
+        # Construir prompt
         prompt = f"{contexto}\n\nPREGUNTA DEL USUARIO: {pregunta}"
 
-        # 1. Llamada a la API de Gemini
+        # 1. Llamada a la API
         response = client.models.generate_content(
             model=model_name,
             contents=[types.Content(parts=[types.Part(text=prompt)])]
         )
-        
         respuesta = response.text
 
         # 2. Envío de la respuesta
         rag.send_whatsapp_text(app.state.WHATSAPP_TOKEN, app.state.WHATSAPP_PHONE_NUMBER_ID, numero_ok, respuesta)
 
-        # 3. Guardar el log y actualizar estado
+        # 3. Guardar SOLO la respuesta del agente (la pregunta ya se guardó en el webhook)
+        # Pasamos np.nan en el mensaje de usuario para no duplicarlo en el chat visual
         app.state.df_log = rag.guardar_log(
             app.state.df_log,
             numero_ok,
-            pregunta,
+            np.nan, 
             respuesta,
             tokens="N/A"
         )
         
-        # Guardar cambios en disco inmediatamente
         if app.state.LOG_FILE_PATH:
             app.state.df_log.to_csv(app.state.LOG_FILE_PATH, index=False, encoding='latin-1')
         
-        return {"status": "success", "response_text": respuesta}
-
     except Exception as e:
         logging.error(f"[AGENTE ERROR] {e}")
         traceback.print_exc()
-        return {"status": "error", "message": str(e)}
+
 
 # ============================================================
 #   ENDPOINTS FRONTEND
@@ -146,16 +132,12 @@ def process_message_with_agent(agent_data: dict, from_wa: str, body: str):
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    """Renderiza el Frontend"""
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.get("/api/contacts")
 async def get_contacts():
-    """Devuelve la lista de números únicos que han interactuado"""
-    # CORRECCIÓN: Verificar atributo antes de acceder
     if not hasattr(app.state, 'df_log') or app.state.df_log is None or app.state.df_log.empty:
         return []
-    
     try:
         unique_numbers = app.state.df_log['Numero WhatsApp'].unique().tolist()
         contacts = []
@@ -169,26 +151,28 @@ async def get_contacts():
 
 @app.get("/api/history/{phone}")
 async def get_history(phone: str):
-    """Devuelve el historial de chat para un número"""
     if not hasattr(app.state, 'df_log') or app.state.df_log is None:
         return []
 
     try:
         df = app.state.df_log
-        # Convertir a string para asegurar match
         df['Numero WhatsApp'] = df['Numero WhatsApp'].astype(str)
+        # Filtramos y hacemos copia
         chat_df = df[df['Numero WhatsApp'] == str(phone)].copy()
         
+        # Reemplazar NaN con "" para manejar filas parciales (solo user o solo agent)
         chat_df = chat_df.fillna("")
         
         history = []
         for _, row in chat_df.iterrows():
+            # Si hay mensaje de usuario en esta fila
             if row['Mensaje Usuario']:
                 history.append({
                     "sender": "user",
                     "text": str(row['Mensaje Usuario']),
                     "time": str(row['Timestamp'])
                 })
+            # Si hay respuesta de agente en esta fila (puede ser la misma fila o distinta)
             if row['Respuesta Agente']:
                 history.append({
                     "sender": "agent",
@@ -202,7 +186,6 @@ async def get_history(phone: str):
 
 @app.post("/api/send_manual")
 async def send_manual_message(request: Request):
-    """Envía mensaje manual, PAUSA al agente y loguea la interacción"""
     data = await request.json()
     phone = data.get("phone")
     message = data.get("message")
@@ -211,10 +194,13 @@ async def send_manual_message(request: Request):
         return JSONResponse({"status": "error", "message": "Faltan datos"})
 
     try:
+        # Enviar
         rag.send_whatsapp_text(app.state.WHATSAPP_TOKEN, app.state.WHATSAPP_PHONE_NUMBER_ID, phone, message)
         
+        # Pausar
         app.state.PAUSED_USERS.add(phone)
         
+        # Guardar en Log (Solo respuesta agente, usuario nan)
         fecha_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         nuevo_registro = {
             "Timestamp": [fecha_hora],
@@ -236,18 +222,41 @@ async def send_manual_message(request: Request):
 
 @app.post("/api/restore_agent")
 async def restore_agent(request: Request):
-    """Reactiva al agente para un usuario"""
     data = await request.json()
     phone = data.get("phone")
     
-    if phone in app.state.PAUSED_USERS:
-        app.state.PAUSED_USERS.remove(phone)
-        return {"status": "success", "agent_status": "ACTIVE"}
-    
-    return {"status": "no_change", "agent_status": "ACTIVE"}
+    # 1. Si no está pausado, no hay nada que restaurar
+    if phone not in app.state.PAUSED_USERS:
+         return {"status": "no_change", "agent_status": "ACTIVE"}
+
+    # 2. Verificar condición: Debe haber una respuesta previa MANUAL
+    try:
+        df = app.state.df_log
+        # Filtrar mensajes de este usuario
+        user_msgs = df[df['Numero WhatsApp'].astype(str) == str(phone)]
+        
+        # Obtener la columna de respuestas del agente, eliminar vacíos
+        agent_responses = user_msgs['Respuesta Agente'].dropna()
+        
+        if agent_responses.empty:
+             return JSONResponse({"status": "error", "message": "Debe dar una respuesta previa antes de restaurar."}, status_code=400)
+
+        last_response = agent_responses.iloc[-1]
+        
+        if "[MANUAL]" not in str(last_response):
+             return JSONResponse({"status": "error", "message": "Debe dar una respuesta previa (Manual) para poder restaurar."}, status_code=400)
+             
+    except Exception as e:
+        logging.error(f"Error verificando historial para restore: {e}")
+        # En caso de error de lectura, por seguridad no restauramos o forzamos? Mejor prevenimos.
+        return JSONResponse({"status": "error", "message": "Error leyendo historial."}, status_code=500)
+
+    # 3. Restaurar si pasó la validación
+    app.state.PAUSED_USERS.remove(phone)
+    return {"status": "success", "agent_status": "ACTIVE"}
 
 # ============================================================
-#   WEBHOOK
+#   WEBHOOK (MODIFICADO PARA GUARDADO INMEDIATO)
 # ============================================================
 
 @app.post("/webhook")
@@ -270,31 +279,34 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
             body = msg["text"]["body"].strip()
             numero_ok = rag.normalizar_numero(from_wa_raw)
 
-            # Verifica si el agente funciona antes de procesar nada
-            if app.state.AGENT is None:
-                logging.warning(f"Mensaje recibido de {numero_ok}, pero el AGENTE no está inicializado.")
-                # Aquí podrías decidir si loguearlo igual o no.
-
-            # --- LÓGICA DE INTERRUPCIÓN ---
-            if numero_ok in app.state.PAUSED_USERS:
-                logging.info(f"[WEBHOOK] Usuario {numero_ok} está PAUSADO. Solo logueamos entrada.")
-                
-                fecha_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                nuevo_registro = {
-                    "Timestamp": [fecha_hora],
-                    "Numero WhatsApp": [numero_ok],
-                    "Mensaje Usuario": [body],
-                    "Respuesta Agente": [np.nan], 
-                    "Tokens Consumidos": ["SILENCED"]
-                }
-                df_temp = pd.DataFrame(nuevo_registro)
-                app.state.df_log = pd.concat([app.state.df_log, df_temp], ignore_index=True)
-                
-                if app.state.LOG_FILE_PATH:
-                    app.state.df_log.to_csv(app.state.LOG_FILE_PATH, index=False, encoding='latin-1')
+            # --- CAMBIO CRITICO: Guardar mensaje del USUARIO inmediatamente ---
+            # Esto permite que aparezca en el chat frontend sin esperar a la IA
+            fecha_hora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Guardamos Usuario con Agente vacio
+            registro_entrada = {
+                "Timestamp": [fecha_hora],
+                "Numero WhatsApp": [numero_ok],
+                "Mensaje Usuario": [body],
+                "Respuesta Agente": [np.nan], 
+                "Tokens Consumidos": ["PENDING"]
+            }
+            df_temp = pd.DataFrame(registro_entrada)
+            
+            # Aseguramos que app.state.df_log no sea None
+            if not hasattr(app.state, 'df_log') or app.state.df_log is None:
+                 app.state.df_log = df_temp
             else:
-                # Flujo normal: Agente responde
-                background_tasks.add_task(process_message_with_agent, app.state.AGENT, from_wa_raw, body)
+                 app.state.df_log = pd.concat([app.state.df_log, df_temp], ignore_index=True)
+
+            if app.state.LOG_FILE_PATH:
+                 app.state.df_log.to_csv(app.state.LOG_FILE_PATH, index=False, encoding='latin-1')
+
+            # --- LOGICA DE PROCESAMIENTO ---
+            if numero_ok in app.state.PAUSED_USERS:
+                logging.info(f"[WEBHOOK] Usuario {numero_ok} PAUSADO. Mensaje guardado, no se activa IA.")
+            else:
+                if app.state.AGENT:
+                    background_tasks.add_task(process_message_with_agent, app.state.AGENT, from_wa_raw, body)
         else:
             print(f"[WhatsApp] Tipo no soportado: {msg_type}")
         
@@ -316,24 +328,13 @@ async def verify_token(request: Request):
 async def health():
     return "ok"
 
-# ============================================================
-#   INICIALIZACION (STARTUP)
-# ============================================================
-
 @app.on_event("startup")
 async def on_startup():
     logging.info("[Startup] Iniciando servidor...")
-    
-    # 1. Definir variables por defecto (Evita AttributeError 'State' object has no attribute...)
     app.state.AGENT = None
     app.state.PAUSED_USERS = set()
+    app.state.df_log = pd.DataFrame(columns=["Timestamp", "Numero WhatsApp", "Mensaje Usuario", "Respuesta Agente", "Tokens Consumidos"])
     
-    # Estructura básica del Log por defecto
-    app.state.df_log = pd.DataFrame(columns=[
-        "Timestamp", "Numero WhatsApp", "Mensaje Usuario", "Respuesta Agente", "Tokens Consumidos"
-    ])
-
-    # 2. Cargar variables de entorno
     app.state.WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
     app.state.WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
     app.state.VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
@@ -343,42 +344,14 @@ async def on_startup():
     app.state.GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
     app.state.GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME")
 
-    # 3. Inicializar Log desde archivo (si existe)
-    if app.state.LOG_FILE_PATH:
+    if app.state.LOG_FILE_PATH and os.path.exists(app.state.LOG_FILE_PATH):
         try:
-            if os.path.exists(app.state.LOG_FILE_PATH):
-                app.state.df_log = pd.read_csv(app.state.LOG_FILE_PATH, encoding='latin-1')
-                logging.info(f"[Startup] Log cargado: {len(app.state.df_log)} registros.")
-            else:
-                # Si no existe, creamos el archivo vacío con cabeceras
-                app.state.df_log.to_csv(app.state.LOG_FILE_PATH, index=False, encoding='latin-1')
-                logging.info(f"[Startup] Nuevo archivo de log creado: {app.state.LOG_FILE_PATH}")
-        except Exception as e:
-            logging.error(f"[Startup] Error crítico al cargar Log: {e}. Se usará DataFrame en memoria.")
-            # app.state.df_log ya tiene un DataFrame vacío por la línea inicial, así que el server no muere.
-
-    # 4. Inicializar Agente
-    logging.info("[Startup] Inicializando agente Gemini...")
-    try:
-        if not app.state.GOOGLE_API_KEY:
-            logging.error("[Startup] FALTA GOOGLE_API_KEY en .env")
-        elif not app.state.DATA_PATH:
-            logging.error("[Startup] FALTA DATA_PATH en .env")
-        else:
-            app.state.AGENT = create_agent_with_csv_genai(
-                app.state.DATA_PATH, 
-                app.state.GEMINI_MODEL_NAME, 
-                app.state.GOOGLE_API_KEY
-            )
-            
-        if app.state.AGENT:
-            logging.info("[Startup] Agente listo y operativo.")
-        else:
-            logging.warning("[Startup] El agente NO se pudo inicializar (revisa rutas o API Key).")
-            
-    except Exception as e:
-        logging.error(f"[Startup] Error fatal inicializando Agente: {e}")
-        app.state.AGENT = None
+            app.state.df_log = pd.read_csv(app.state.LOG_FILE_PATH, encoding='latin-1')
+            logging.info(f"[Startup] Log cargado: {len(app.state.df_log)} registros.")
+        except: pass
+    
+    if app.state.GOOGLE_API_KEY and app.state.DATA_PATH:
+         app.state.AGENT = create_agent_with_csv_genai(app.state.DATA_PATH, app.state.GEMINI_MODEL_NAME, app.state.GOOGLE_API_KEY)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
