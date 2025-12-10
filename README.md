@@ -32,3 +32,6 @@ Este en general es bastante mejor que el de LangChain, porque puede reconocer me
 
 Este codigo lo que hace es crear un indice de vectores de embeddings por medio de FAISS. Esta generación toma su tiempo, por lo que tuve que guardarlo en un archivo .bin junto con su corpus en .txt, ahora bien, como se puede observar en su ejecución, el mismo no responde con el accuracy de los anteriores. Y esto es porque en la generación de los embeddings, le paso todo sin hacer un analisis previo de nada. Esto es bien importante, porque entonces aqui el contexto tiene que tener una gestion previa de inteligencia que los anteriores ya de alguna forma asumian. En este caso no sucede. Con lo cual se requiere realizar un proceso previo de datascience a fin de que el agente responda adecuadamente. 
 
+### Human in the Loop. 
+
+El objetivo de este aprendizaje es el de incluir un humano dentro de la conversacion. Para ello he construido un frontend simple que pueda interactuar con el backend de forma que permita esta colaboracion en la conversacion. 
