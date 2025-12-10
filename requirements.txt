@@ -16,3 +16,4 @@ google.genai
 faiss-cpu
 google-genai
 tqdm
+jinja2
