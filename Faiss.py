@@ -36,23 +36,23 @@ app = FastAPI(title="WhatsApp RAG Agent Gemini + FAISS")
 
 def create_embeddings_and_index(df: pd.DataFrame, client: genai.Client, embedding_model: str):
     """
-    1️⃣ Genera embeddings a partir del DataFrame y crea el objeto de índice FAISS.
+    embeddings a partir del DataFrame y crea el objeto de índice FAISS.
     NO guarda los archivos de persistencia.
     """
     logging.info("Creando textos para embedding...")
     
-    # 1. Preparar el corpus
+    
     cols_to_embed = [col for col in df.columns if col not in ['id', 'ID']]
-    # Genera el 'text_chunk' uniendo valores de columnas
+    # ACA HAY QUE MEJORAR CON DS PARA PODER MEJORAR LOS CHUNKS. 
     df["text_chunk"] = df[cols_to_embed].astype(str).agg(" | ".join, axis=1)
     corpus = df["text_chunk"].tolist()
     
     logging.info(f"Generando embeddings para {len(corpus)} fragmentos...")
 
-    # 2. Generar embeddings por lotes
+    
     embeddings_list = []
     batch_size = 100
-
+    #tqdm piola para ver progreso
     for i in tqdm(range(0, len(corpus), batch_size)):
         batch = corpus[i:i + batch_size]
         try:
@@ -60,7 +60,7 @@ def create_embeddings_and_index(df: pd.DataFrame, client: genai.Client, embeddin
                 model=embedding_model,
                 contents=batch
             )
-            # Asegurarse de que el objeto Value sea convertido a float
+            # el value siempre debe ser float.
             for emb in response.embeddings:
                 embeddings_list.append(emb.values) 
         except Exception as e:
@@ -84,7 +84,7 @@ def create_embeddings_and_index(df: pd.DataFrame, client: genai.Client, embeddin
 
 def load_or_create_faiss_artifacts(df: pd.DataFrame, client: genai.Client, embedding_model: str):
     """
-    2️⃣ Lógica de Persistencia: Intenta cargar. Si falla/no existe, crea y guarda.
+    Lógica de Persistencia: Intenta cargar. Si falla/no existe, crea y guarda.
     Esto previene la inyección de datos (regeneración) en cada startup.
     """
     faiss_index = None
@@ -124,9 +124,7 @@ def load_or_create_faiss_artifacts(df: pd.DataFrame, client: genai.Client, embed
 
 
 def create_rag_agent(data_path: str, model_name: str, embedding_model: str, api_key: str):
-    """
-    3️⃣ Inicializa el cliente, carga el dataset y obtiene los artefactos FAISS.
-    """
+
     try:
         client = genai.Client(api_key=api_key)
         logging.info(f"Cliente Gemini inicializado con modelo {model_name}")
@@ -201,7 +199,7 @@ def process_message_with_agent(agent_data: dict, from_wa: str, body: str):
 
         retrieved_context = "\n---\n".join([corpus[i] for i in indices[0]])
 
-        # --------- 3. GENERACIÓN DE RESPUESTA (Gemini) ----------
+        #3. GENERACIÓN DE RESPUESTA (Gemini)
         full_context = (
             f"{system_instruction}\n\n"
             "--- INICIO DE DATOS RELEVANTES ---\n"
@@ -218,7 +216,7 @@ def process_message_with_agent(agent_data: dict, from_wa: str, body: str):
 
         respuesta = response.text
 
-        # --------- 4. ENVÍO Y LOG ----------
+        #4. ENVÍO Y LOG
         rag.send_whatsapp_text(wp_token, wp_phone_number_id, numero_ok, respuesta)
 
         rag.guardar_log(
@@ -350,5 +348,4 @@ async def startup_event():
 
 
 if __name__ == "__main__":
-    # Asegúrate de tener la variable de entorno PORT definida o usará 8000 por defecto
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))

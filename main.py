@@ -4,7 +4,6 @@ import numpy as np
 import traceback
 import Rag_functions as rag
 import logging
-import json
 from datetime import datetime
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
@@ -23,7 +22,7 @@ app = FastAPI(title="WhatsApp XLSX Agent Gemini GenAI + Human Interface")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], #es prueba esto si es en prod, hay que cambiarlo.
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
